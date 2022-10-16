@@ -1,0 +1,9 @@
+[package]
+name = "butter_db"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+parking_lot = "0.12.1"
+strum = "0.24.1"
+btrfsutil = "0.1.0"
