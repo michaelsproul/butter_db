@@ -1,26 +1,34 @@
-use crate::Generation;
-use parking_lot::MutexGuard;
-use std::path::Path;
+use crate::{Error, Snapshot, Table, TableId};
+use faster_hex::hex_string;
+use parking_lot::{MutexGuard, RwLock};
+use std::fs::{self, File};
+use std::io::{self, Read, Write};
+use std::path::PathBuf;
 
 pub struct Transaction<'a> {
-    read_gen: &'a RwLock<Generation>,
-    write_gen: MutexGuard<'a, Generation>,
-    open_tables: Vec<Table>,
-    root_path: &'a Path,
+    pub(crate) read_snapshot: &'a RwLock<Snapshot>,
+    pub(crate) txn_lock: MutexGuard<'a, ()>,
+    pub(crate) write_snapshot: Snapshot,
+    pub(crate) open_tables: Vec<Table>,
 }
 
-impl Transaction<'a> {
+impl<'a> Transaction<'a> {
     pub fn commit(self) -> Result<(), Error> {
-        // Update read snapshot with results of current transaction.
-        let read_gen = self.read_gen.write();
-        *read_gen = *self.write_gen;
+        // Obtain a write lock on the read snapshot, ensuring there are no readers active.
+        let mut read_snapshot = self.read_snapshot.write();
 
-        // TODO: could sync here
+        // Update the read snapshot with the results of the current transaction.
+        let old_read_snapshot = std::mem::replace(&mut *read_snapshot, self.write_snapshot);
 
-        // Leave write generation the same as the read generation, it will be incremented
-        // on next transaction.
-        drop(read_gen);
-        drop(self.write_gen);
+        // Delete the previous read snapshot from disk.
+        // FIXME(sproul): this is probably slow, could delete in the background.
+        fs::remove_dir_all(&old_read_snapshot.path)?;
+
+        // Drop write lock on `read_snapshot`, allowing new readers to observe the changes.
+        drop(read_snapshot);
+
+        // Drop transaction lock, allowing new write transactions to begin.
+        drop(self.txn_lock);
 
         Ok(())
     }
@@ -29,15 +37,15 @@ impl Transaction<'a> {
     ///
     /// Assume table names are filesystem safe.
     fn table_path(&self, name: &str) -> PathBuf {
-        self.root_path.join(self.write_gen.as_str()).join(name)
+        self.write_snapshot.path.join(name)
     }
 
     /// Path to the file for a key.
     ///
     /// Keys are encoded to ensure the path is filesystem safe.
     fn key_path(&self, table: &Table, key: &[u8]) -> Result<PathBuf, Error> {
-        let encoded_key = 
-        table.path.join(
+        let encoded_key = hex_string(key);
+        Ok(table.path.join(encoded_key))
     }
 
     pub fn create_table(&mut self, name: &str) -> Result<TableId, Error> {
@@ -48,5 +56,28 @@ impl Transaction<'a> {
         self.open_tables.push(Table { path });
 
         Ok(id)
+    }
+
+    pub fn get_table(&self, id: TableId) -> Result<&Table, Error> {
+        self.open_tables.get(id.id).ok_or(Error::Oops)
+    }
+
+    pub fn put(&self, table: &Table, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        let key_path = self.key_path(table, key)?;
+        let mut key_file = File::create(&key_path)?;
+        key_file.write_all(value)?;
+        Ok(())
+    }
+
+    pub fn get(&self, table: &Table, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
+        let key_path = self.key_path(table, key)?;
+        let mut key_file = match File::open(key_path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = vec![];
+        key_file.read_to_end(&mut bytes)?;
+        Ok(Some(bytes))
     }
 }

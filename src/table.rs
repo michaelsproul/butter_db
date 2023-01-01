@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 /// Index into `open_tables`.
 pub struct TableId {
-    id: usize,
+    pub id: usize,
 }
 
-/// A table is just a directory under the root path.
+/// A table is just a directory under the snapshot path.
 pub struct Table {
     pub path: PathBuf,
 }
