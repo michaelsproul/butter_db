@@ -1,14 +1,9 @@
+use super::test_root;
 use crate::Database;
-use std::path::PathBuf;
-use tempfile::tempdir_in;
-
-fn testdir() -> PathBuf {
-    PathBuf::from("/mnt/database/")
-}
 
 #[test]
 fn read_write_read() {
-    let root_path = tempdir_in(testdir()).unwrap();
+    let root_path = test_root();
     let db = Database::create(root_path.path().to_path_buf()).unwrap();
 
     let mut txn = db.begin_transaction().unwrap();
@@ -31,7 +26,7 @@ fn read_write_read() {
 
 #[test]
 fn delete() {
-    let root_path = tempdir_in(testdir()).unwrap();
+    let root_path = test_root();
     let db = Database::create(root_path.path().to_path_buf()).unwrap();
 
     let mut txn = db.begin_transaction().unwrap();
