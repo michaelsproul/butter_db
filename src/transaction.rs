@@ -48,6 +48,9 @@ impl<'a> Transaction<'a> {
         Ok(table.path.join(encoded_key))
     }
 
+    /// Create a table in the database with `name`.
+    ///
+    /// Return the ID of the table.
     pub fn create_table(&mut self, name: &str) -> Result<TableId, Error> {
         let path = self.table_path(name);
         fs::create_dir(&path)?;
@@ -56,6 +59,19 @@ impl<'a> Transaction<'a> {
         self.open_tables.push(Table { path });
 
         Ok(id)
+    }
+
+    // TODO(sproul): consider using interior mutabilty to enable returning a `Table`.
+    pub fn open_table(&mut self, name: &str) -> Result<TableId, Error> {
+        let path = self.table_path(name);
+
+        if path.is_dir() {
+            let id = TableId::new(self.open_tables.len());
+            self.open_tables.push(Table { path });
+            Ok(id)
+        } else {
+            Err(Error::Oops)
+        }
     }
 
     pub fn get_table(&self, id: TableId) -> Result<&Table, Error> {
@@ -79,5 +95,16 @@ impl<'a> Transaction<'a> {
         let mut bytes = vec![];
         key_file.read_to_end(&mut bytes)?;
         Ok(Some(bytes))
+    }
+
+    pub fn delete(&self, table: &Table, key: &[u8]) -> Result<(), Error> {
+        let key_path = self.key_path(table, key)?;
+        fs::remove_file(key_path).or_else(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e.into())
+            }
+        })
     }
 }
