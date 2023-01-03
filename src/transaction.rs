@@ -1,9 +1,8 @@
-use crate::{Error, Snapshot, Table, TableId};
-use faster_hex::hex_string;
+use crate::{Cursor, Error, IndexFile, Snapshot, Table, TableId};
 use parking_lot::{MutexGuard, RwLock};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Transaction<'a> {
     pub(crate) read_snapshot: &'a RwLock<Snapshot>,
@@ -40,12 +39,9 @@ impl<'a> Transaction<'a> {
         self.write_snapshot.path.join(name)
     }
 
-    /// Path to the file for a key.
-    ///
-    /// Keys are encoded to ensure the path is filesystem safe.
-    fn key_path(&self, table: &Table, key: &[u8]) -> Result<PathBuf, Error> {
-        let encoded_key = hex_string(key);
-        Ok(table.path.join(encoded_key))
+    /// Path to the index file for a table.
+    fn index_file_path(table_path: &Path) -> PathBuf {
+        table_path.join("index.sqlite")
     }
 
     /// Create a table in the database with `name`.
@@ -55,8 +51,10 @@ impl<'a> Transaction<'a> {
         let path = self.table_path(name);
         fs::create_dir(&path)?;
 
+        let index_file = IndexFile::create(Self::index_file_path(&path))?;
+
         let id = TableId::new(self.open_tables.len());
-        self.open_tables.push(Table { path });
+        self.open_tables.push(Table { path, index_file });
 
         Ok(id)
     }
@@ -67,7 +65,8 @@ impl<'a> Transaction<'a> {
 
         if path.is_dir() {
             let id = TableId::new(self.open_tables.len());
-            self.open_tables.push(Table { path });
+            let index_file = IndexFile::open(Self::index_file_path(&path))?;
+            self.open_tables.push(Table { path, index_file });
             Ok(id)
         } else {
             Err(Error::Oops)
@@ -79,14 +78,15 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn put(&self, table: &Table, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        let key_path = self.key_path(table, key)?;
+        let key_path = table.key_path(key);
         let mut key_file = File::create(&key_path)?;
         key_file.write_all(value)?;
+        table.index_file.put_key(key)?;
         Ok(())
     }
 
     pub fn get(&self, table: &Table, key: &[u8]) -> Result<Option<Vec<u8>>, Error> {
-        let key_path = self.key_path(table, key)?;
+        let key_path = table.key_path(key);
         let mut key_file = match File::open(key_path) {
             Ok(f) => f,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -98,13 +98,18 @@ impl<'a> Transaction<'a> {
     }
 
     pub fn delete(&self, table: &Table, key: &[u8]) -> Result<(), Error> {
-        let key_path = self.key_path(table, key)?;
+        let key_path = table.key_path(key);
         fs::remove_file(key_path).or_else(|e| {
             if e.kind() == io::ErrorKind::NotFound {
                 Ok(())
             } else {
-                Err(e.into())
+                Err(e)
             }
-        })
+        })?;
+        table.index_file.delete_key(key)
+    }
+
+    pub fn cursor<'b>(&'b self, table: &'a Table) -> Result<Cursor<'b>, Error> {
+        Cursor::new(table)
     }
 }

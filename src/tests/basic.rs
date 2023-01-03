@@ -20,8 +20,6 @@ fn read_write_read() {
     assert_eq!(v1, &[2]);
 
     txn.commit().unwrap();
-
-    std::mem::forget(root_path);
 }
 
 #[test]

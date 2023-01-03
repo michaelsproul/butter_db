@@ -8,6 +8,7 @@ parking_lot = "0.12.1"
 strum = { version = "0.24.1", features = ["derive"] }
 btrfsutil = "0.1.0"
 faster-hex = "0.6.1"
+sqlite = "0.30"
 
 [dev-dependencies]
 tempfile = "3.3.0"
