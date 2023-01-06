@@ -1,8 +1,9 @@
 use crate::{Error, Table};
+use derivative::Derivative;
 use sqlite::CursorWithOwnership as SqliteCursor;
 use std::borrow::Cow;
-use std::fs::File;
-use std::io::Read;
+use std::fs::{self, File};
+use std::io::{self, Read};
 
 pub type OwnedKey = Vec<u8>;
 pub type OwnedValue = Vec<u8>;
@@ -10,12 +11,17 @@ pub type OwnedValue = Vec<u8>;
 pub type Key<'a> = Cow<'a, [u8]>;
 pub type Value<'a> = Cow<'a, [u8]>;
 
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct Cursor<'txn> {
     table: &'txn Table,
     /// Iterator over index file.
+    #[derivative(Debug = "ignore")]
     rows: SqliteCursor<'txn>,
-    /// Most recently read entry or `None` if no entry has been read yet.
-    current_key_value: Option<(OwnedKey, OwnedValue)>,
+    /// Most recently read key or `None` if no entry has been read yet.
+    current_key: Option<OwnedKey>,
+    /// The value corresponding to `current_key`, or `None` if it hasn't been loaded yet.
+    current_value: Option<OwnedValue>,
     /// Is the cursor positioned at the first key?
     is_at_first_key: bool,
 }
@@ -30,13 +36,14 @@ impl<'txn> Cursor<'txn> {
         Ok(Cursor {
             table,
             rows,
-            current_key_value: None,
+            current_key: None,
+            current_value: None,
             is_at_first_key: true,
         })
     }
 
     pub fn first_key(&mut self) -> Result<Option<Key>, Error> {
-        if let Some((ref k, _)) = self.current_key_value {
+        if let Some(ref k) = self.current_key {
             if self.is_at_first_key {
                 Ok(Some(Cow::Borrowed(k)))
             } else {
@@ -47,6 +54,14 @@ impl<'txn> Cursor<'txn> {
         }
     }
 
+    // FIXME(sproul): this is a bit slow and we could probably jump straight to the end.
+    pub fn last_key(&mut self) -> Result<Option<Key>, Error> {
+        while self.next_key()?.is_some() {
+            // Advance to next key.
+        }
+        Ok(self.current_key.as_deref().map(Cow::Borrowed))
+    }
+
     pub fn next_key(&mut self) -> Result<Option<Key>, Error> {
         let Some(new_row) = self.rows.next().transpose()? else {
             // End of the iterator.
@@ -54,31 +69,63 @@ impl<'txn> Cursor<'txn> {
             return Ok(None)
         };
 
-        // Parse key and value from filename + contents.
+        // Parse the key from the row.
         let key = new_row.try_read::<&[u8], _>(0)?.to_vec();
-        let mut file = File::open(self.table.key_path(&key))?;
 
-        let mut value = vec![];
-        file.read_to_end(&mut value)?;
+        // Update the current key and value.
+        let prev_key = std::mem::replace(&mut self.current_key, Some(key.clone()));
+        self.current_value = None;
 
-        // Update the current key-value.
-        let prev_kv = std::mem::replace(&mut self.current_key_value, Some((key.clone(), value)));
-
-        // Only if the previous KV was `None` are we still at the first key-value.
-        self.is_at_first_key = prev_kv.is_none();
+        // Only if the previous key was `None` are we still at the first key.
+        self.is_at_first_key = prev_key.is_none();
 
         Ok(Some(Cow::Owned(key)))
     }
 
     pub fn get_current(&mut self) -> Result<Option<(Key, Value)>, Error> {
-        if self.current_key_value.is_none() && self.is_at_first_key {
+        if self.current_key.is_none() && self.is_at_first_key {
             self.next_key()?;
         }
 
-        if let Some((k, v)) = &self.current_key_value {
-            Ok(Some((Cow::Borrowed(k), Cow::Borrowed(v))))
+        if let Some(key) = &self.current_key {
+            if self.current_value.is_none() {
+                let mut file = File::open(self.table.key_path(key))?;
+                let mut value = vec![];
+                file.read_to_end(&mut value)?;
+                self.current_value = Some(value);
+            }
+            let value = self
+                .current_value
+                .as_deref()
+                .map(Cow::Borrowed)
+                .ok_or(Error::Oops)?;
+            Ok(Some((Cow::Borrowed(key), value)))
         } else {
             Ok(None)
         }
+    }
+
+    pub fn delete_current(&mut self) -> Result<(), Error> {
+        let Some(key) = &self.current_key else {
+            return Ok(());
+        };
+
+        // Delete from the index.
+        self.table.index_file.delete_key(key)?;
+
+        // Delete from disk.
+        let key_path = self.table.key_path(key);
+        fs::remove_file(key_path).or_else(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                Ok(())
+            } else {
+                Err(e)
+            }
+        })?;
+
+        // Erase from cursor.
+        self.current_value = None;
+
+        Ok(())
     }
 }

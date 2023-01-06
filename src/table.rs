@@ -3,11 +3,13 @@ use faster_hex::hex_string;
 use std::path::PathBuf;
 
 /// Index into `open_tables`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TableId {
     pub id: usize,
 }
 
 /// A table is a directory under `/{generation}/{table_name}` containing an index file.
+#[derive(Debug)]
 pub struct Table {
     pub path: PathBuf,
     pub index_file: IndexFile,

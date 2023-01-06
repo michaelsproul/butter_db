@@ -4,30 +4,43 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub struct Transaction<'a> {
     pub(crate) read_snapshot: &'a RwLock<Snapshot>,
-    pub(crate) txn_lock: MutexGuard<'a, ()>,
+    pub(crate) _txn_lock: MutexGuard<'a, ()>,
     pub(crate) write_snapshot: Snapshot,
     pub(crate) open_tables: Vec<Table>,
+    pub(crate) committed: bool,
+}
+
+impl<'a> Drop for Transaction<'a> {
+    fn drop(&mut self) {
+        if !self.committed {
+            // Try to delete the aborted write snapshot.
+            // FIXME(sproul): remove unwrap
+            fs::remove_dir_all(&self.write_snapshot.path).unwrap();
+            assert!(!self.write_snapshot.path.exists());
+        }
+    }
 }
 
 impl<'a> Transaction<'a> {
-    pub fn commit(self) -> Result<(), Error> {
+    pub fn commit(mut self) -> Result<(), Error> {
         // Obtain a write lock on the read snapshot, ensuring there are no readers active.
         let mut read_snapshot = self.read_snapshot.write();
 
         // Update the read snapshot with the results of the current transaction.
-        let old_read_snapshot = std::mem::replace(&mut *read_snapshot, self.write_snapshot);
+        std::mem::swap(&mut *read_snapshot, &mut self.write_snapshot);
 
-        // Delete the previous read snapshot from disk.
+        // Delete the previous read snapshot from disk (now `self.write_snapshot`).
         // FIXME(sproul): this is probably slow, could delete in the background.
-        fs::remove_dir_all(&old_read_snapshot.path)?;
+        fs::remove_dir_all(&self.write_snapshot.path)?;
+        assert!(!self.write_snapshot.path.exists());
+
+        self.committed = true;
 
         // Drop write lock on `read_snapshot`, allowing new readers to observe the changes.
         drop(read_snapshot);
-
-        // Drop transaction lock, allowing new write transactions to begin.
-        drop(self.txn_lock);
 
         Ok(())
     }

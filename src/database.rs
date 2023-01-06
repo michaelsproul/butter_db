@@ -26,6 +26,7 @@ impl Generation {
 }
 
 /// Snapshot of the database at a specific version including `Generation` and `Subvolume`.
+#[derive(Debug)]
 pub struct Snapshot {
     pub(crate) gen: Generation,
     pub(crate) path: PathBuf,
@@ -34,6 +35,7 @@ pub struct Snapshot {
     pub(crate) subvolume: Subvolume,
 }
 
+#[derive(Debug)]
 pub struct Database {
     // Lock order: `write_gen` must always acquired before `read_gen`.
     read_snapshot: RwLock<Snapshot>,
@@ -44,6 +46,35 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn open_or_create(root_path: PathBuf) -> Result<Self, Error> {
+        let tick_path = Self::calc_gen_path(&root_path, Generation::Tick);
+        let tock_path = Self::calc_gen_path(&root_path, Generation::Tock);
+
+        let (gen, path) = match (tick_path.exists(), tock_path.exists()) {
+            (true, false) => (Generation::Tick, tick_path.clone()),
+            (false, true) => (Generation::Tock, tock_path.clone()),
+            (false, false) => return Self::create(root_path),
+            (true, true) => {
+                // FIXME(sproul): handle this by choosing the snapshot with the lower (?) generation
+                panic!("unclean shutdown")
+            }
+        };
+
+        let read_snapshot = RwLock::new(Snapshot {
+            gen,
+            path: path.clone(),
+            subvolume: Subvolume::create(path, None)?,
+        });
+
+        Ok(Self {
+            read_snapshot,
+            txn_lock: Mutex::new(()),
+            root_path,
+            tick_path,
+            tock_path,
+        })
+    }
+
     pub fn create(root_path: PathBuf) -> Result<Self, Error> {
         let tick_path = Self::calc_gen_path(&root_path, Generation::Tick);
         let tock_path = Self::calc_gen_path(&root_path, Generation::Tock);
@@ -64,7 +95,7 @@ impl Database {
     }
 
     pub fn begin_transaction(&self) -> Result<Transaction, Error> {
-        let txn_lock = self.txn_lock.lock();
+        let _txn_lock = self.txn_lock.lock();
 
         // Clone the read subvolume, creating a new subvolume for writing.
         // Increment the generation.
@@ -101,9 +132,10 @@ impl Database {
 
         Ok(Transaction {
             read_snapshot: &self.read_snapshot,
-            txn_lock,
+            _txn_lock,
             write_snapshot,
             open_tables: vec![],
+            committed: false,
         })
     }
 

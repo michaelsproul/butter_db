@@ -1,9 +1,13 @@
 use crate::Error;
+use derivative::Derivative;
 use sqlite::Connection;
 use std::path::PathBuf;
 
 /// An index is an ordered list of keys for a table stored as an SQLite database on disk.
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct IndexFile {
+    #[derivative(Debug = "ignore")]
     pub(crate) conn: Connection,
     #[allow(dead_code)]
     path: PathBuf,
