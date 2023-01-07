@@ -17,7 +17,7 @@ pub struct Cursor<'txn> {
     table: &'txn Table,
     /// Iterator over index file.
     #[derivative(Debug = "ignore")]
-    rows: SqliteCursor<'txn>,
+    rows: Option<SqliteCursor<'txn>>,
     /// Most recently read key or `None` if no entry has been read yet.
     current_key: Option<OwnedKey>,
     /// The value corresponding to `current_key`, or `None` if it hasn't been loaded yet.
@@ -35,7 +35,7 @@ impl<'txn> Cursor<'txn> {
             .into_iter();
         Ok(Cursor {
             table,
-            rows,
+            rows: Some(rows),
             current_key: None,
             current_value: None,
             is_at_first_key: true,
@@ -54,16 +54,18 @@ impl<'txn> Cursor<'txn> {
         }
     }
 
-    // FIXME(sproul): this is a bit slow and we could probably jump straight to the end.
     pub fn last_key(&mut self) -> Result<Option<Key>, Error> {
-        while self.next_key()?.is_some() {
-            // Advance to next key.
-        }
-        Ok(self.current_key.as_deref().map(Cow::Borrowed))
+        let opt_key = self.table.index_file.last_key()?;
+
+        self.current_key = opt_key.clone();
+        self.current_value = None;
+        self.rows = None;
+
+        Ok(opt_key.map(Cow::Owned))
     }
 
     pub fn next_key(&mut self) -> Result<Option<Key>, Error> {
-        let Some(new_row) = self.rows.next().transpose()? else {
+        let Some(new_row) = self.rows.as_mut().and_then(|rows| rows.next()).transpose()? else {
             // End of the iterator.
             self.is_at_first_key = false;
             return Ok(None)

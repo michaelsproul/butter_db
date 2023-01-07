@@ -16,6 +16,7 @@ pub struct IndexFile {
 impl IndexFile {
     pub fn create(path: PathBuf) -> Result<Self, Error> {
         let conn = Connection::open(&path)?;
+        Self::apply_pragmas(&conn)?;
 
         // Create the index table.
         // FIXME(sproul): benchmark default vs WITHOUT ROWID
@@ -30,7 +31,13 @@ impl IndexFile {
 
     pub fn open(path: PathBuf) -> Result<Self, Error> {
         let conn = Connection::open(&path)?;
+        Self::apply_pragmas(&conn)?;
         Ok(Self { conn, path })
+    }
+
+    fn apply_pragmas(conn: &Connection) -> Result<(), Error> {
+        conn.execute("PRAGMA journal_mode=MEMORY")?;
+        Ok(())
     }
 
     // Turn the journal off completely. We don't need SQLite's atomic commit because we
@@ -60,5 +67,15 @@ impl IndexFile {
         stmt.bind((1, key))?;
         stmt.into_iter().collect::<Result<Vec<_>, _>>()?;
         Ok(())
+    }
+
+    pub fn last_key(&self) -> Result<Option<Vec<u8>>, Error> {
+        let stmt = self.conn.prepare("SELECT MAX(key) FROM keys")?;
+        for maybe_row in stmt {
+            let row = maybe_row?;
+            let key: Option<&[u8]> = row.try_read(0)?;
+            return Ok(key.map(|slice| slice.to_vec()));
+        }
+        Ok(None)
     }
 }
